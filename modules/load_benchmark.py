@@ -50,8 +50,8 @@ def main():
     for bench in range(1, 19):
         print(f'Converting ibm{bench:02d}.net...')
         adj = load_benchmark(base_path + f'ibm{bench:02d}/ibm{bench:02d}.net')
-        # np.save(base_path + f'ibm{bench:02d}/ibm{bench:02d}_adj.npy', adj) 
-        adj = torch.from_numpy(adj).to_sparse_csr()
-        torch.save(adj, base_path+f'ibm{bench:02d}/ibm{bench:02d}_adj.pt')
+        # np.save(base_path + f'ibm{bench:02d}/ibm{bench:02d}_adj.npy', adj)
+        adj_cso = torch.from_numpy(adj).to_sparse_coo() # COO format matrix
+        torch.save(adj_cso, base_path+f'ibm{bench:02d}/ibm{bench:02d}_coo.pt')
 if __name__=='__main__':
     main()
