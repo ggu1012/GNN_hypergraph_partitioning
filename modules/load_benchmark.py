@@ -2,6 +2,7 @@
 
 import numpy as np
 import torch
+import argparse
 
 def load_benchmark(path):
     '''
@@ -21,7 +22,7 @@ def load_benchmark(path):
         num_cells = int(ckt.readline())
         
         cell_idx = dict()
-        adj_mat = np.zeros((num_nets, num_modules), dtype=bool)
+        adj_mat = np.zeros((num_nets, num_modules))
         # initialized size = e x v
         # should be transposed later
 
@@ -46,12 +47,24 @@ def load_benchmark(path):
     return adj_mat.T
 
 def main():
+    parser = argparse.ArgumentParser(description='Options')
+    parser.add_argument('--gen', '-g', dest="gen", action="store_true")
+    parser.add_argument('--num', '-n', dest="num", action="store")
+    args = parser.parse_args()
+
     base_path = '/home/shkim/gnn_partitioning/dataset/ISPD98_benchmark_suite/'
-    for bench in range(1, 19):
-        print(f'Converting ibm{bench:02d}.net...')
+    if not args.gen:
+        for bench in range(1, 19):
+            print(f'Converting ibm{bench:02d}.net...')
+            adj = load_benchmark(base_path + f'ibm{bench:02d}/ibm{bench:02d}.net')
+            # np.save(base_path + f'ibm{bench:02d}/ibm{bench:02d}_adj.npy', adj)
+            adj_coo = torch.from_numpy(adj).type(torch.int8).to_sparse_coo() # COO format matrix
+            torch.save(adj_coo, base_path+f'ibm{bench:02d}/ibm{bench:02d}_coo.pt')
+    else:
+        print("Extracting data for generic hypergraph")
+        bench = args.num
         adj = load_benchmark(base_path + f'ibm{bench:02d}/ibm{bench:02d}.net')
-        # np.save(base_path + f'ibm{bench:02d}/ibm{bench:02d}_adj.npy', adj)
-        adj_cso = torch.from_numpy(adj).to_sparse_coo() # COO format matrix
-        torch.save(adj_cso, base_path+f'ibm{bench:02d}/ibm{bench:02d}_coo.pt')
+
+
 if __name__=='__main__':
     main()
