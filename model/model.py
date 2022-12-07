@@ -1,106 +1,127 @@
 #!/usr/bin/env python3
 
-import os
-import time
-from utils import *
 import torch
 from torch import nn
-from torch import optim
+import torch.nn.functional as F
 from torch_geometric.nn import HypergraphConv
+import torch_geometric.nn as gnn
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '2'
+from utils.my_utils import *
+
 
 class HyperGAP(nn.Module):
     def __init__(
         self,
-        p_num, # the number of partitions        
+        p_num,  # the number of partitions
         conv_emb_size,
-        part_emb_size
+        part_emb_size,
+        gnn_dropout=0.5,
+        mlp_dropout=0.5
     ):
-        '''
+        """
         args:
             inc_indice (tensor.shape == (2,-1)): the location(index) of 1 in incidence matrix
             p_num (int): the number of partitions
             layer_num (int): the number of GNNConv layers
-            conv_emb_size (list): embedding sizes for gnn layers            
-        '''
+            conv_emb_size (list): embedding sizes for gnn layers
+        """
         super(HyperGAP, self).__init__()
 
-        assert p_num == part_emb_size[-1], "the number of partition = MLP layer size [-1]"
+        assert (
+            p_num == part_emb_size[-1]
+        ), "the number of partition = MLP layer size [-1]"
         self.p_num = p_num
-        self.gnn_layers = nn.ModuleList([HypergraphConv(conv_emb_size[n], conv_emb_size[n+1]) for n in range(len(conv_emb_size) - 1)])
-        self.mlp_layers = nn.ModuleList([nn.Linear(part_emb_size[n], part_emb_size[n+1]) for n in range(len(part_emb_size) - 1)])
-        self.hidden_act = nn.ReLU()
+
+        self.gnn_layers = nn.ModuleList(
+            [
+                HypergraphConv(
+                    in_channels=conv_emb_size[n],
+                    out_channels=conv_emb_size[n + 1],
+                    dropout=gnn_dropout
+                )
+                for n in range(len(conv_emb_size) - 1)
+            ]
+        )
+        self.gnn_norm = nn.ModuleList(
+            [gnn.GraphNorm(conv_emb_size[n + 1]) for n in range(len(conv_emb_size) - 1)]
+        )
+        self.gnn_act = nn.LeakyReLU()
+        self.gnn_drop=nn.Dropout(gnn_dropout)
+        self.mlp = gnn.models.MLP(
+            part_emb_size, dropout=mlp_dropout, act="LeakyReLU", norm="InstanceNorm"
+        )
         self.final_act = nn.Softmax(dim=1)
 
-    def forward(self, x, inc_idx):
-        for hconv in self.gnn_layers:
-            x = hconv(x, inc_idx)
+    def forward(self, x, inc_mat):
+        inc_idx = inc_mat.indices().long()
+        for i, hconv in enumerate(self.gnn_layers):
+            x = hconv(x=x, hyperedge_index=inc_idx)
+            x = self.gnn_norm[i](x)
+            x = self.gnn_act(x)
+            x = self.gnn_drop(x)
+        x = self.mlp(x)
+        x = self.final_act(x)
+        return x
 
-        # now we have node embeddings
-        # translate embs to probability with MLP
-        for mlp in self.mlp_layers[:-1]:
-            x = mlp(x)
-            x = self.hidden_act(x)
-        
-        return self.final_act(self.mlp_layers[-1](x))     
-
-    def loss(self, prob, inc_idx_nested):
-        '''
+    def loss(self, prob, inc_idx_nested, hedge_sz, vol_V, device):
+        """
         args:
             prob (torch.Tensor (v_num, p_num)): probability matrix, output from HyperGAP layers
             inc_idx_nested (torch.sparse_coo (v_num, e_num)): incidence matrix of hypergraph
-        '''
+        """
+        v_num, p_num = prob.shape
+        e_num = inc_idx_nested.shape[0]
 
         xfx = inc_idx_nested
-        extended = torch.cat((prob, torch.zeros((1,prob.shape[1]), device='cuda')), 0)
-        xdx = extended[xfx]
-        print(xdx.shape)
+        extended = F.pad(prob, (0, 0, 0, 1), "constant", 0)
+
+        # _, label = torch.max(prob, dim=1)
+        # label = torch.cat([label, torch.tensor([-1]).cuda()])
+        # discrete_label = label.index_select(dim=0, index=xfx.view(-1)).view(xfx.shape)
+        # discrete_conn = 0
+        # for x in discrete_label:
+        #     discrete_conn += (x.unique().shape[0]-2)
+
+        #### indexing tweak.
+        # use index_select for fast indexing
+        # view(-1) for mat-to-vec
+        # view(.,-1,.) to reshape
+        # works as 'extended[xfx]'
+        xdx = extended.index_select(dim=0, index=xfx.view(-1)).view((e_num, -1, p_num))
+        # xdx.shape = (e, -1, p)
+        # -1 means the maximum number of non-zero values in one hyperedge
+        ###
+
         part_prob = 1 - (1 - xdx).prod(1)
+
+        # Connectivity; (lambda-1) metrics
         connectivity = part_prob.sum()
 
+        _connectivity = part_prob.sum(1)
+        weighted_cut = _connectivity / hedge_sz
+        w_connectivity = weighted_cut.sum()
+
+        # normalized cut
+        vol_S = xdx.sum(dim=1).sum(dim=0)
+        vol_Sinv = vol_V - vol_S
+        ww = (vol_V / (vol_S * vol_Sinv)) * (
+            1 - torch.eye(prob.shape[1], device=device)
+        )
+        zz = ww @ part_prob.T
+        cut_S = part_prob.T.mul(zz).sum()
+
         part_expected_v_nums = prob.sum(dim=0)
-        balancedness = torch.pow(part_expected_v_nums - prob.shape[0] // prob.shape[1], 2).sum()
+        # balance
+        balancedness = torch.pow(part_expected_v_nums - v_num // p_num, 2).sum() / p_num
+        # negative entropy for balance
+        # p = (part_expected_v_nums) / v_num
+        # print(p)
+        # entrpy =  (p * torch.log2(p)).sum()
 
-        return connectivity, balancedness
-    
-
-if __name__ == '__main__':
-    device = 'cuda'
-    
-    inc_mat = load_ISPD_benchmark('/home/shkim/gnn_partitioning/dataset', 1)
-
-
-    x = torch.randn(inc_mat.indices()[0][-1] + 1, 256).to(device)
-    dcd = split_col_inc_idx(inc_mat).to(device)
-    # dcd = torch.load('/home/shkim/gnn_partitioning/dcd').to(device)
-    partition_num = 2
-
-    conv_emb_sz = [256, 128, 64]
-    lin_emb_sz = [64, 16, 8, partition_num]
-    model = HyperGAP(partition_num, conv_emb_sz, lin_emb_sz).to(device)
-
-    params = []
-    for param in model.parameters():
-        if param.requires_grad:
-            params.append(param)
-
-    # optimizer = optim.SGD(params, lr=0.03, momentum=0.9)
-    optimizer = optim.Adam(params, lr=0.03)
-    _ind = inc_mat.indices().long().to(device)
-
-    start = time.time()
-
-    # init embs generation
-    for ep in range(10):
-        optimizer.zero_grad()
-        prob = model.forward(x, _ind)
-        conn, bal = model.loss(prob, dcd)
-        loss = (conn - inc_mat.shape[1]) + 0.01 * bal
-
-        loss.backward()
-        optimizer.step()
-        # print(f'({ep:>5}) loss: {loss.item():.3f}, connectivity: {conn.item() - inc_mat.shape[1]:.3f}, balance: {bal.item():.3f}')
-        
-        if ep % 200 == 0 :
-            torch.save(model.state_dict(), "./model_dict")
+        return (
+            connectivity,
+            cut_S,
+            balancedness,
+            w_connectivity,
+            _connectivity,
+        )

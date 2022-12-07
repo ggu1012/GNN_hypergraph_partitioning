@@ -135,5 +135,11 @@ dmypy.json
 
 GCN_Partitioning/
 dataset/reddit.zip
-dataset/ISPD98_benchmark_suite/**/**/**
+dataset/tensored
+dataset/hgr_benchmark_set
+*.csv
+*.pt
+*.png
+init_embs_*
+
 # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
