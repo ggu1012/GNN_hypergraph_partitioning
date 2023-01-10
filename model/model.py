@@ -16,7 +16,7 @@ class HyperGAP(nn.Module):
         conv_emb_size,
         part_emb_size,
         gnn_dropout=0.5,
-        mlp_dropout=0.5
+        mlp_dropout=0.5,
     ):
         """
         args:
@@ -37,7 +37,7 @@ class HyperGAP(nn.Module):
                 HypergraphConv(
                     in_channels=conv_emb_size[n],
                     out_channels=conv_emb_size[n + 1],
-                    dropout=gnn_dropout
+                    dropout=gnn_dropout,
                 )
                 for n in range(len(conv_emb_size) - 1)
             ]
@@ -46,7 +46,7 @@ class HyperGAP(nn.Module):
             [gnn.GraphNorm(conv_emb_size[n + 1]) for n in range(len(conv_emb_size) - 1)]
         )
         self.gnn_act = nn.LeakyReLU()
-        self.gnn_drop=nn.Dropout(gnn_dropout)
+        self.gnn_drop = nn.Dropout(gnn_dropout)
         self.mlp = gnn.models.MLP(
             part_emb_size, dropout=mlp_dropout, act="LeakyReLU", norm="InstanceNorm"
         )
@@ -60,7 +60,8 @@ class HyperGAP(nn.Module):
             x = self.gnn_act(x)
             x = self.gnn_drop(x)
         x = self.mlp(x)
-        x = self.final_act(x)
+        # x = self.final_act(x)
+        x = F.gumbel_softmax(x, tau=0.1, hard=False)
         return x
 
     def loss(self, prob, inc_idx_nested, hedge_sz, vol_V, device):
@@ -125,3 +126,25 @@ class HyperGAP(nn.Module):
             w_connectivity,
             _connectivity,
         )
+    
+    def gumbel_loss(self, prob, inc_idx_nested, device):
+        v_num, p_num = prob.shape
+        e_num = inc_idx_nested.shape[0]
+
+        xfx = inc_idx_nested
+        extended = F.pad(prob, (0, 0, 0, 1), "constant", 0)
+
+        #### indexing tweak.
+        # use index_select for fast indexing
+        # view(-1) for mat-to-vec
+        # view(.,-1,.) to reshape
+        # works as 'extended[xfx]'
+        xdx = extended.index_select(dim=0, index=xfx.view(-1)).view((e_num, -1, p_num))
+        # xdx.shape = (e, -1, p)
+        # -1 means the maximum number of non-zero values in one hyperedge
+        ###
+
+        connectivity = xdx.max(dim=1).values.sum()
+        balancedness = torch.pow(prob.sum(dim=0) - v_num // p_num, 2).sum() / p_num
+
+        return connectivity, balancedness

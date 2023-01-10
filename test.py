@@ -45,7 +45,7 @@ for hedge in xfx:
         divided_edges += 1
 print(f'conn: {conn}, div_edges: {divided_edges}')
 
-with open('./dataset/hgr_benchmark_set/ISPD98_ibm01.hgr.part.4') as f:
+with open('./dataset/hgr_benchmark_set/ISPD98_ibm01.hgr.part.2') as f:
     x = f.readlines()
     hmetis_result = torch.tensor([int(y.strip()) for y in x])
 

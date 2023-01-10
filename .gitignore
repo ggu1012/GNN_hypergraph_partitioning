@@ -138,7 +138,6 @@ dataset/reddit.zip
 dataset/tensored
 dataset/hgr_benchmark_set
 *.csv
-*.pt
 *.png
 init_embs_*
 

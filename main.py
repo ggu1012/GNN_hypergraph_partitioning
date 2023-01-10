@@ -15,11 +15,10 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 device = 'cuda'
 
 bench = '01'
-partition_num = 4
+partition_num = 2
 
 
 inc_mat = load_tensored_hgr(f'/home/shkim/gnn_partitioning/dataset/tensored/ISPD_ibm{bench}_coo.pt')
-# inc_mat = load_tensored_hgr('/home/shkim/gnn_partitioning/ibm01_compressed_1200_1400.pt')
 
 init_emb_size = 256
 x = torch.randn(inc_mat.indices()[0][-1] + 1, init_emb_size).to(device)
@@ -64,11 +63,12 @@ for ep in range(10000):
     prob = model.forward(x, inc_mat)
     conn, cut, bal, w_conn, _conn = model.loss(prob, dcd, hsz, vol_V, device)
 
+    conn, bal = model.gumbel_loss(prob, dcd, device)
 
     # loss = cut
 
     # loss = (10 * cut + 1e-3 * bal)
-    loss = (conn + 1e-2 * bal)
+    loss = (conn + 1e-3 * bal)
     # loss = conn + cut
 
     loss.backward()
@@ -92,8 +92,7 @@ for ep in range(10000):
     diff_.append(np.argwhere((new - old) != 0).flatten().shape[0])
     if (ep) % 100 == 0:
         pd.DataFrame(tmp).to_csv('tmp.csv')
-        pd.DataFrame(tmp.max(axis=1)).to_csv('tmp1.csv')
-        pd.DataFrame(np.abs((new - old))).to_csv('tmp2.csv')   
+        pd.DataFrame(np.abs((new - old))).to_csv('tmp1.csv')   
     old = new
 
     if (ep) % 200 == 0:
